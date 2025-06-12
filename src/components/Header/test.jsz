@@ -1,0 +1,354 @@
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInAnonymously,
+  signOut as firebaseSignOut,
+  signInWithCustomToken,
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+} from 'firebase/firestore';
+
+// --- Helper: Icon SVGs ---
+// Using SVGs directly avoids needing an icon library.
+const UserIcon = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+  >
+    <path
+      fillRule="evenodd"
+      d="M18.685 19.097A9.723 9.723 0 0021.75 12c0-5.385-4.365-9.75-9.75-9.75S2.25 6.615 2.25 12a9.723 9.723 0 003.065 7.097A9.716 9.716 0 0012 21.75a9.716 9.716 0 006.685-2.653zm-12.54-1.285A7.486 7.486 0 0112 15a7.486 7.486 0 015.855 2.812A8.224 8.224 0 0112 20.25a8.224 8.224 0 01-5.855-2.438zM15.75 9a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"
+      clipRule="evenodd"
+    />
+  </svg>
+);
+
+const BotIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M10 9a3 3 0 100-6 3 3 0 000 6z" />
+        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a4 4 0 10-3.476 6.325A5.003 5.003 0 0015 11.5a.5.5 0 00-1 0 4 4 0 01-3.476 3.875A3.987 3.987 0 0110 14a4 4 0 01-4-4 .5.5 0 00-1 0 5 5 0 005 5 .5.5 0 000-1 4 4 0 01-1.524-.275A4.987 4.987 0 0011 11.5a.5.5 0 000-1 3.986 3.986 0 01-2-3.475V6.5a.5.5 0 00-1 0v.525A4.987 4.987 0 005.5 11a.5.5 0 00-1 0 4 4 0 013.476-3.875A3.987 3.987 0 0110 6a4 4 0 014 4 .5.5 0 001 0 5 5 0 00-5-5z" clipRule="evenodd" />
+    </svg>
+);
+
+
+// --- Firebase Configuration ---
+// These global variables are expected to be provided by the environment.
+const firebaseConfig = typeof __firebase_config !== 'undefined'
+  ? JSON.parse(__firebase_config)
+  : {};
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-bakebot-app';
+
+// --- Component: Header ---
+function Header({ user, profile, onNavigate, onLogout, onToggleDropdown }) {
+  return (
+    <header className="bg-gray-800 text-white shadow-md">
+      <div className="container mx-auto flex items-center justify-between p-4">
+        <div className="flex items-center space-x-2">
+            <BotIcon />
+            <div className="text-2xl font-bold">BakeBot</div>
+        </div>
+        <nav className="hidden md:flex items-center space-x-6">
+          <a href="#" onClick={() => onNavigate('home')} className="hover:text-pink-300 transition-colors">🧾 Home</a>
+          <a href="#chatbot" className="hover:text-pink-300 transition-colors">🤖 Chatbot Assistant</a>
+          <a href="#converter" className="hover:text-pink-300 transition-colors">⚖️ Converter</a>
+        </nav>
+        <div className="relative">
+          {user ? (
+            <button onClick={onToggleDropdown} className="w-10 h-10 bg-pink-500 rounded-full flex items-center justify-center text-white font-bold text-lg hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-white">
+              {profile && profile.displayName ? profile.displayName.charAt(0).toUpperCase() : <UserIcon className="w-6 h-6" />}
+            </button>
+          ) : (
+            <button
+              onClick={() => onNavigate('setup')}
+              className="bg-pink-500 hover:bg-pink-600 text-white font-bold py-2 px-4 rounded-full transition-all duration-300 transform hover:scale-105"
+            >
+              Get Started
+            </button>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+
+// --- Component: ProfileDropdown ---
+function ProfileDropdown({ onLogout, onNavigate }) {
+  return (
+    <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-xl z-20 py-1 ring-1 ring-black ring-opacity-5">
+      <a
+        href="#"
+        onClick={(e) => { e.preventDefault(); onNavigate('setup'); }}
+        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+      >
+        Edit Profile
+      </a>
+      <a
+        href="#"
+        onClick={(e) => { e.preventDefault(); onLogout(); }}
+        className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+      >
+        Logout
+      </a>
+    </div>
+  );
+}
+
+// --- Component: SetupPage ---
+function SetupPage({ onProfileSave, currentUser, initialProfile }) {
+  const [displayName, setDisplayName] = useState(initialProfile.displayName || '');
+  const [username, setUsername] = useState(initialProfile.username || '');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!displayName || !username) {
+      setError('Please fill out all fields.');
+      return;
+    }
+    setError('');
+    setIsLoading(true);
+    try {
+      await onProfileSave({ displayName, username });
+    } catch (err) {
+      console.error("Error saving profile: ", err);
+      setError('Failed to save profile. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex-grow flex items-center justify-center bg-gray-100 p-4">
+      <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8">
+        <h2 className="text-3xl font-bold text-center text-gray-800 mb-2">
+            {initialProfile.displayName ? 'Edit Your Profile' : 'Create Your Profile'}
+        </h2>
+        <p className="text-center text-gray-500 mb-8">
+            Setup your BakeBot account to get started.
+        </p>
+        <form onSubmit={handleSubmit}>
+          <div className="mb-4">
+            <label htmlFor="displayName" className="block text-gray-700 text-sm font-bold mb-2">
+              Display Name
+            </label>
+            <input
+              type="text"
+              id="displayName"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="shadow-sm appearance-none border rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-pink-400"
+              placeholder="e.g., Jane Doe"
+            />
+          </div>
+          <div className="mb-6">
+            <label htmlFor="username" className="block text-gray-700 text-sm font-bold mb-2">
+              Username
+            </label>
+            <input
+              type="text"
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="shadow-sm appearance-none border rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-pink-400"
+              placeholder="e.g., @janedoe"
+            />
+          </div>
+          {error && <p className="text-red-500 text-xs italic mb-4">{error}</p>}
+          <div className="flex items-center justify-center">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-pink-500 hover:bg-pink-600 text-white font-bold py-3 px-4 rounded-full focus:outline-none focus:shadow-outline transition-all duration-300 disabled:bg-gray-400"
+            >
+              {isLoading ? 'Saving...' : 'Save Profile'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// --- Component: HomePage (Placeholder) ---
+function HomePage() {
+  return (
+    <div className="flex-grow container mx-auto p-8 text-center">
+      <h1 className="text-4xl font-bold text-gray-800 mb-4">Welcome to BakeBot!</h1>
+      <p className="text-xl text-gray-600">Your friendly assistant for all things baking. Use the links above to get started.</p>
+       <div className="mt-8 text-sm text-gray-500">
+         <p>You can use the 'Get Started' button to create a profile.</p>
+       </div>
+    </div>
+  );
+}
+
+// --- Main App Component ---
+export default function App() {
+  const [page, setPage] = useState('home');
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isDropdownVisible, setIsDropdownVisible] = useState(false);
+  
+  // State to hold Firebase services
+  const [auth, setAuth] = useState(null);
+  const [db, setDb] = useState(null);
+
+  // One-time Firebase initialization and Auth state listener
+  useEffect(() => {
+    // Only initialize if config is available
+    if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
+      const app = initializeApp(firebaseConfig);
+      const authInstance = getAuth(app);
+      const dbInstance = getFirestore(app);
+      setAuth(authInstance); // Store auth instance in state
+      setDb(dbInstance);     // Store db instance in state
+
+      // Listen for authentication state changes
+      const unsubscribe = onAuthStateChanged(authInstance, async (currentUser) => {
+        setUser(currentUser); // Always set the user state
+        if (currentUser) {
+          // User is signed in.
+          // Now, try to fetch their profile from Firestore
+          const profileDocRef = doc(dbInstance, `artifacts/${appId}/users/${currentUser.uid}/profile/data`);
+          const profileDocSnap = await getDoc(profileDocRef);
+
+          if (profileDocSnap.exists()) {
+            setProfile(profileDocSnap.data());
+             // If profile exists, user is fully set up, go to home
+            setPage('home');
+          } else {
+             // If no profile, they need to complete setup
+            setProfile(null); // Explicitly clear old profile
+            setPage('setup');
+          }
+        } else {
+          // User is signed out.
+          setProfile(null);
+          setPage('home'); // Go to home on logout
+        }
+        setIsAuthReady(true);
+      });
+      
+      // Sign in logic
+      (async () => {
+          const initialToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+          try {
+              if(initialToken) {
+                  await signInWithCustomToken(authInstance, initialToken);
+              } else {
+                  await signInAnonymously(authInstance);
+              }
+          } catch (error) {
+              console.error("Anonymous sign-in failed", error);
+          }
+      })();
+
+
+      // Cleanup subscription on unmount
+      return () => unsubscribe();
+    } else {
+        // Handle case where firebase config is not available
+        console.warn("Firebase config is missing. App will run without backend features.");
+        setIsAuthReady(true); // Allow UI to render without auth
+    }
+  }, []); // Empty dependency array ensures this runs only once
+
+  const handleNavigate = (targetPage) => {
+    setPage(targetPage);
+    setIsDropdownVisible(false); // Close dropdown on any navigation
+  };
+
+  const handleLogout = async () => {
+    if (!auth) return;
+    setIsDropdownVisible(false);
+    try {
+      await firebaseSignOut(auth);
+      // onAuthStateChanged will handle setting user and profile to null
+    } catch (error) {
+      console.error("Error signing out: ", error);
+    }
+  };
+  
+  // FIX: This function now depends on `auth` and `db` from state.
+  // This ensures that when the function is called, it has access to the initialized services.
+  const handleProfileSave = useCallback(async (profileData) => {
+    // Get the current user directly from the auth service instance. This is more reliable
+    // than relying on the `user` state which could be stale during rapid state changes.
+    const currentUser = auth ? auth.currentUser : null;
+    
+    if (!currentUser || !db) {
+        console.error("Auth or DB service not ready, or no user logged in.");
+        return;
+    }
+
+    const profileDocRef = doc(db, `artifacts/${appId}/users/${currentUser.uid}/profile/data`);
+    
+    try {
+        await setDoc(profileDocRef, profileData, { merge: true });
+        setProfile(profileData); // Update profile state locally
+        setPage('home'); // Navigate to home after saving
+    } catch (error) {
+        console.error("Error writing profile to Firestore: ", error);
+        throw error; // Re-throw to be caught in the component
+    }
+  }, [auth, db]); // The dependency array ensures this function is stable until auth/db are ready.
+
+  const toggleDropdown = () => {
+    setIsDropdownVisible(prev => !prev);
+  }
+
+  // Render a loading state until Firebase Auth is ready
+  if (!isAuthReady) {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-100">
+            <p className="text-lg text-gray-600">Loading BakeBot...</p>
+        </div>
+    );
+  }
+  
+  return (
+    <div className="min-h-screen flex flex-col font-sans bg-gray-50">
+      <Header 
+        user={user} 
+        profile={profile}
+        onNavigate={handleNavigate} 
+        onLogout={handleLogout} 
+        onToggleDropdown={toggleDropdown}
+      />
+      {isDropdownVisible && user && (
+        <div className="relative container mx-auto flex justify-end">
+            <ProfileDropdown onLogout={handleLogout} onNavigate={handleNavigate} />
+        </div>
+      )}
+      
+      <main className="flex-grow w-full flex flex-col">
+        {page === 'home' && <HomePage />}
+        {page === 'setup' && (
+          <SetupPage 
+            onProfileSave={handleProfileSave}
+            currentUser={user}
+            initialProfile={profile || {}}
+           />
+        )}
+      </main>
+      
+      <footer className="bg-gray-800 text-white text-center p-4">
+        <p>&copy; 2024 BakeBot. All rights reserved.</p>
+        {user && <p className="text-xs text-gray-400 mt-1">User ID: {user.uid}</p>}
+      </footer>
+    </div>
+  );
+}
